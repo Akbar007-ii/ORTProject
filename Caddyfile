@@ -1,0 +1,12 @@
+# HTTPS in front of the API. Caddy obtains and renews the certificate for {$API_DOMAIN} itself.
+{$API_DOMAIN} {
+	encode gzip
+	request_body {
+		max_size 10MB
+	}
+	reverse_proxy api:8000
+	log {
+		output stdout
+		format console
+	}
+}

@@ -1,0 +1,126 @@
+# The whole stack on one server, with HTTPS from Caddy (certificates are automatic).
+#
+#   cp .env.example .env.prod   # fill in real secrets, API_DOMAIN, ENVIRONMENT=staging|production
+#   docker compose -f docker-compose.prod.yml --env-file .env.prod up -d --build
+#
+# API_DOMAIN must point (DNS A record) to this server, and ports 80/443 must be open.
+# Migrations run once in the `migrate` service before the API starts.
+
+x-app: &app
+  build: .
+  env_file: .env.prod
+  environment:
+    ENVIRONMENT: ${ENVIRONMENT:-production}
+    DATABASE_URL: postgresql+asyncpg://orto:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/orto
+    REDIS_URL: redis://redis:6379/0
+    MEDIA_DIR: /app/media
+  restart: unless-stopped
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_started
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: orto
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: orto
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U orto -d orto"]
+      interval: 5s
+      retries: 20
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+
+  migrate:
+    <<: *app
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+    healthcheck:
+      disable: true
+
+  caddy:
+    image: caddy:2.8-alpine
+    environment:
+      API_DOMAIN: ${API_DOMAIN:?set API_DOMAIN, e.g. api-staging.example.kg}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - api
+    restart: unless-stopped
+
+  api:
+    <<: *app
+    environment:
+      ENVIRONMENT: ${ENVIRONMENT:-production}
+      DATABASE_URL: postgresql+asyncpg://orto:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/orto
+      REDIS_URL: redis://redis:6379/0
+      MEDIA_DIR: /app/media
+      # Only Caddy (and the host itself) can reach the API, so its X-Forwarded-For is trusted.
+      FORWARDED_ALLOW_IPS: "*"
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - media:/app/media
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  worker:
+    <<: *app
+    command: ["python", "-m", "mysite.worker"]
+    healthcheck:
+      disable: true  # no HTTP port here
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  bot:
+    <<: *app
+    command: ["python", "-m", "mysite.bot"]
+    profiles: ["telegram"]  # started only with --profile telegram, once TELEGRAM_BOT_TOKEN is set
+    healthcheck:
+      disable: true
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  backup:
+    image: postgres:17-alpine
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+    volumes:
+      - ./backups:/backups
+    # Daily compressed dump, keeps the last 14. Copy ./backups off the server as well.
+    entrypoint:
+      - sh
+      - -c
+      - |
+        while true; do
+          pg_dump -h postgres -U orto -d orto -Fc -f /backups/orto-$$(date +%Y%m%d-%H%M).dump &&
+          ls -1t /backups/orto-*.dump | tail -n +15 | xargs -r rm --
+          sleep 86400
+        done
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  media:
+  caddy_data:
+  caddy_config:
