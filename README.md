@@ -125,15 +125,24 @@ docker compose up -d                        # PostgreSQL (5433) жана Redis (
 Ар мүнөт сайын убактысы бүткөн тесттерди жабат жана Telegram эскертмелерин жөнөтөт
 (бир күнгө бир жолу, тынч сааттарда жок, ботту бөгөттөгөндөргө токтойт).
 
-## Production
+## Серверге жүктөө (staging же production)
+
+Серверде: Docker, ачык 80/443 порттору, `API_DOMAIN` үчүн DNS A-жазуусу сервердин IP'сине.
 
 ```bash
-cp .env.example .env.prod      # SECRET_KEY, POSTGRES_PASSWORD, FRONTEND_URL, CORS_ORIGINS, SMTP_*...
+git clone <репозиторий> orto && cd orto
+cp .env.example .env.prod      # SECRET_KEY, POSTGRES_PASSWORD, API_DOMAIN, ENVIRONMENT=staging,
+                               # FRONTEND_URL, CORS_ORIGINS, SMTP_* ...
 docker compose -f docker-compose.prod.yml --env-file .env.prod up -d --build
-docker compose -f docker-compose.prod.yml --env-file .env.prod --profile telegram up -d   # бот керек болсо
+docker compose -f docker-compose.prod.yml --env-file .env.prod run --rm api python -m mysite.cli seed-staging --domain <домен>
 ```
 
-Курамы: `postgres`, `redis`, `migrate` (бир жолу `alembic upgrade head`), `api` (127.0.0.1:8000),
-`worker`, `bot` (каалоо боюнча), `backup` (күн сайын `pg_dump` → `./backups`, акыркы 14ү сакталат).
-API'нин алдына TLS берген reverse proxy (Caddy/nginx) коюлушу керек. Production'до API начар
-`SECRET_KEY` же `localhost` FRONTEND_URL менен иштебей коёт; `/docs` жабык.
+Акыркы буйрук демо маалыматты жана ар бир ролго бирден тесттик аккаунт түзөт, сырсөздөрдү бир жолу
+гана көрсөтөт (production'до иштебейт). Фронтенд үчүн колдонмо: `docs/FRONTEND_API.md`.
+
+Курамы: `caddy` (HTTPS сертификатты өзү алат), `postgres`, `redis`, `migrate` (бир жолу
+`alembic upgrade head`), `api`, `worker`, `bot` (`--profile telegram` менен), `backup` (күн сайын
+`pg_dump` → `./backups`, акыркы 14ү). `ENVIRONMENT=staging` болсо `/docs` ачык; `production` болсо
+жабык, жана API начар `SECRET_KEY` же `localhost` FRONTEND_URL менен иштебей коёт.
+
+Жаңыртуу: `git pull` жана ошол эле `up -d --build` (миграциялар өзү өтөт).
